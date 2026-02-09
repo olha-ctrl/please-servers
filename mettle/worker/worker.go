@@ -475,6 +475,13 @@ func (w *worker) RunTask(ctx context.Context) (*pb.ExecuteResponse, error) {
 	} else {
 		msg.Ack()
 	}
+
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "task_total",
+		"took":  time.Since(w.taskStartTime).String(),
+	}).Info("Stage completed")
+
 	w.currentMsg = nil
 	w.actionDigest = nil
 	return response, err
@@ -532,7 +539,9 @@ func (w *worker) runTaskRequest(req *pb.ExecuteRequest) *pb.ExecuteResponse {
 	w.taskStartTime = time.Now()
 	w.actionDigest = req.ActionDigest
 	logr.WithFields(logrus.Fields{
-		"hash": w.actionDigest.Hash,
+		"hash":   w.actionDigest.Hash,
+		"size":   w.actionDigest.SizeBytes,
+		"worker": w.name,
 	}).Debug("Received task for action digest")
 	w.lastURL = w.actionURL()
 
@@ -625,15 +634,42 @@ func (w *worker) extendAckDeadlineOnce(ctx context.Context, client *psraw.Subscr
 
 // fetchRequestBlobs fetches and unmarshals the action and command for an execution request.
 func (w *worker) fetchRequestBlobs(req *pb.ExecuteRequest) (*pb.Action, *pb.Command, *rpcstatus.Status) {
+	start := time.Now()
+
 	action := &pb.Action{}
 	command := &pb.Command{}
+	t0 := time.Now()
+
 	if err := w.readBlobToProto(req.ActionDigest, action); err != nil {
 		return nil, nil, status(err, codes.FailedPrecondition, "Invalid action digest %s/%d: %s", req.ActionDigest.Hash, req.ActionDigest.SizeBytes, err)
-	} else if err := w.readBlobToProto(action.CommandDigest, command); err != nil {
+	}
+
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "fetch_action",
+		"took":  time.Since(t0).String(),
+	}).Info("Stage completed")
+
+	t1 := time.Now()
+	if err := w.readBlobToProto(action.CommandDigest, command); err != nil {
 		return nil, nil, status(err, codes.FailedPrecondition, "Invalid command digest %s/%d: %s", action.CommandDigest.Hash, action.CommandDigest.SizeBytes, err)
-	} else if err := common.CheckOutputPaths(command); err != nil {
+	}
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "fetch_command",
+		"took":  time.Since(t1).String(),
+	}).Info("Stage completed")
+
+	if err := common.CheckOutputPaths(command); err != nil {
 		return nil, nil, status(err, codes.InvalidArgument, "Invalid command outputs: %s", err)
 	}
+
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "fetch_request_blobs_total",
+		"took":  time.Since(start).String(),
+	}).Info("Stage completed")
+
 	return action, command, nil
 }
 
@@ -661,6 +697,14 @@ func (w *worker) prepareDirWithPacks(action *pb.Action, command *pb.Command, use
 	if err := w.createTempDir(); err != nil {
 		return status(err, codes.Internal, "Failed to create temp dir: %s", err)
 	}
+
+	logr.WithFields(logrus.Fields{
+		"hash":      w.actionDigest.Hash,
+		"stage":     "inputs_download_start",
+		"usePacks":  usePacks,
+		"inputRoot": action.InputRootDigest.GetHash(),
+	}).Info("Stage started")
+
 	start := time.Now()
 	w.metadata.InputFetchStartTimestamp = toTimestamp(start)
 	if err := w.downloadDirectory(action.InputRootDigest, usePacks); err != nil {
@@ -669,6 +713,15 @@ func (w *worker) prepareDirWithPacks(action *pb.Action, command *pb.Command, use
 		}
 		return status(err, codes.Unknown, "Failed to download input root: %s", err)
 	}
+
+	logr.WithFields(logrus.Fields{
+		"hash":             w.actionDigest.Hash,
+		"stage":            "inputs_download_done",
+		"took":             time.Since(start).String(),
+		"downloaded_bytes": w.downloadedBytes,
+		"cached_bytes":     w.cachedBytes,
+	}).Info("Stage completed")
+
 	// We are required to create directories for all the outputs.
 	if !containsEnvVar(command, "_CREATE_OUTPUT_DIRS", "false") {
 		for _, out := range command.OutputPaths {
@@ -733,10 +786,15 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	start := time.Now()
 	w.metadata.ExecutionStartTimestamp = toTimestamp(start)
 	duration, _ := ptypes.Duration(action.Timeout)
+
 	logr.WithFields(logrus.Fields{
-		"hash":     w.actionDigest.Hash,
-		"duration": duration,
-	}).Debug("Executing action with timeout")
+		"hash":    w.actionDigest.Hash,
+		"stage":   "exec_start",
+		"timeout": duration.String(),
+		"workdir": command.WorkingDirectory,
+		"command": strings.Join(command.Arguments, " "),
+	}).Info("Stage started")
+
 	cmd := exec.Command(commandPath(command), command.Arguments[1:]...)
 	// Setting Pdeathsig should ideally make subprocesses get kill signals if we die.
 	cmd.SysProcAttr = sysProcAttr()
@@ -755,10 +813,15 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		}
 		cmd.Env[i] = v.Name + "=" + v.Value
 	}
+	tExec := time.Now()
+
 	err := w.runCommand(cmd, duration)
 	logr.WithFields(logrus.Fields{
-		"hash": w.actionDigest.Hash,
-	}).Debug("Completed execution")
+		"hash":  w.actionDigest.Hash,
+		"stage": "exec_done",
+		"took":  time.Since(tExec).String(),
+		"err":   fmt.Sprintf("%v", err),
+	}).Info("Stage completed")
 
 	execEnd := time.Now()
 	w.metadata.VirtualExecutionDuration = durationpb.New(duration)
@@ -772,7 +835,19 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		ExecutionMetadata: w.metadata,
 	}
 
+	// --- upload stdout ---
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_stdout_start",
+	}).Info("Stage started")
+	tUpStdout := time.Now()
 	stdoutDigest, uploadErr := w.client.WriteBlob(w.stdout.Bytes())
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_stdout_done",
+		"took":  time.Since(tUpStdout).String(),
+		"err":   fmt.Sprintf("%v", uploadErr),
+	}).Info("Stage completed")
 	if uploadErr != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -784,7 +859,19 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	}
 	ar.StdoutDigest = stdoutDigest
 
+	// --- upload stderr ---
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_stderr_start",
+	}).Info("Stage started")
+	tUpStderr := time.Now()
 	stderrDigest, uploadErr := w.client.WriteBlob(w.stderr.Bytes())
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_stderr_done",
+		"took":  time.Since(tUpStderr).String(),
+		"err":   fmt.Sprintf("%v", uploadErr),
+	}).Info("Stage completed")
 	if uploadErr != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -819,7 +906,21 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 			Message: msg,
 		}
 	}
+
+	// --- upload outputs ---
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_outputs_start",
+	}).Info("Stage started")
+	tUpOutputs := time.Now()
 	if err := w.collectOutputs(ar, command); err != nil {
+		logr.WithFields(logrus.Fields{
+			"hash":  w.actionDigest.Hash,
+			"stage": "upload_outputs_done",
+			"took":  time.Since(tUpOutputs).String(),
+			"err":   fmt.Sprintf("%v", err),
+		}).Info("Stage completed")
+
 		collectOutputErrors.Inc()
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -829,6 +930,13 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 			Result: ar,
 		}
 	}
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "upload_outputs_done",
+		"took":  time.Since(tUpOutputs).String(),
+		"err":   "nil",
+	}).Info("Stage completed")
+
 	end := time.Now()
 	w.metadata.OutputUploadCompletedTimestamp = toTimestamp(end)
 	uploadDurations.Observe(end.Sub(execEnd).Seconds())
@@ -852,6 +960,12 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		}
 	}
 
+	// --- update action result ---
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "update_action_result_start",
+	}).Info("Stage started")
+	tUpAR := time.Now()
 	ar, err = w.client.UpdateActionResult(&pb.UpdateActionResultRequest{
 		InstanceName: w.instanceName,
 		ActionDigest: w.actionDigest,
@@ -860,6 +974,13 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 			Priority: resultsCachePriority(req.SkipCacheLookup),
 		},
 	})
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "update_action_result_done",
+		"took":  time.Since(tUpAR).String(),
+		"err":   fmt.Sprintf("%v", err),
+	}).Info("Stage completed")
+
 	if err != nil {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
