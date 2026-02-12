@@ -53,8 +53,6 @@ import (
 )
 
 var log = logging.MustGetLogger()
-
-// var logr = logrus.WithField("component", "worker")
 var logr = logrus.StandardLogger()
 
 var totalBuilds = prometheus.NewCounter(prometheus.CounterOpts{
@@ -737,11 +735,9 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 
 	logr.WithFields(logrus.Fields{
 		"hash":    w.actionDigest.Hash,
-		"stage":   "exec_start",
+		"stage":   "exec_action",
 		"timeout": duration.String(),
-		"workdir": command.WorkingDirectory,
-		"command": strings.Join(command.Arguments, " "),
-	}).Info("Stage started")
+	}).Debug("Executing action - started")
 
 	cmd := exec.Command(commandPath(command), command.Arguments[1:]...)
 	// Setting Pdeathsig should ideally make subprocesses get kill signals if we die.
@@ -773,10 +769,10 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 
 	logr.WithFields(logrus.Fields{
 		"hash":  w.actionDigest.Hash,
-		"stage": "exec_done",
+		"stage": "exec_action",
 		"took":  execDuration,
 		"err":   fmt.Sprintf("%v", err),
-	}).Info("Stage completed")
+	}).Debug("Executing action - completed")
 
 	ar := &pb.ActionResult{
 		ExitCode:          int32(cmd.ProcessState.ExitCode()),
