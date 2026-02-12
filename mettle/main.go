@@ -233,7 +233,7 @@ func initLogrusFromVerbosity(v logging.Verbosity, structured bool) {
 		level = logrus.ErrorLevel
 	case 1:
 		level = logrus.WarnLevel
-	// notice -> closest in logrus
+	// use info as logrus doesn't have notice level
 	case 2:
 		level = logrus.InfoLevel
 	case 3:

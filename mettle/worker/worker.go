@@ -732,14 +732,15 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	start := time.Now()
 	w.metadata.ExecutionStartTimestamp = toTimestamp(start)
 	duration, _ := ptypes.Duration(action.Timeout)
-
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 	logr.WithFields(logrus.Fields{
 		"hash":    w.actionDigest.Hash,
 		"stage":   "exec_action",
 		"timeout": duration.String(),
 	}).Debug("Executing action - started")
 
-	cmd := exec.Command(commandPath(command), command.Arguments[1:]...)
+	cmd := exec.CommandContext(ctx, commandPath(command), command.Arguments[1:]...)
 	// Setting Pdeathsig should ideally make subprocesses get kill signals if we die.
 	cmd.SysProcAttr = sysProcAttr()
 	cmd.Dir = path.Join(w.dir, command.WorkingDirectory)
@@ -758,7 +759,7 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		cmd.Env[i] = v.Name + "=" + v.Value
 	}
 
-	err := w.runCommand(cmd, duration)
+	err := w.runCommand(ctx, cmd, duration)
 
 	execEnd := time.Now()
 	w.metadata.VirtualExecutionDuration = durationpb.New(duration)
@@ -920,55 +921,38 @@ func containsAllOutputPaths(cmd *pb.Command, ar *pb.ActionResult) bool {
 	return true
 }
 
-// / runCommand runs a command with a timeout, terminating it in a sensible manner.
-// Some care is needed here due to horrible interactions between process termination and
-// having an in-process stdout / stderr.
-func (w *worker) runCommand(oldCmd *exec.Cmd, timeout time.Duration) error {
+// runCommand runs a command with a timeout, terminating it in a sensible manner
+func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
 	w.stdout.Reset()
 	w.stderr.Reset()
 
-	// crete new context and copy all instructions
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, oldCmd.Path, oldCmd.Args[1:]...)
-	cmd.Dir = oldCmd.Dir
-	cmd.Env = oldCmd.Env
-	cmd.SysProcAttr = oldCmd.SysProcAttr
+	cmd.Stdout = &w.stdout
+	cmd.Stderr = &w.stderr
 	gracePeriod := 5 * time.Second
 	cmd.WaitDelay = gracePeriod
 
-	// assign buffers directly
-	cmd.Stdout = &w.stdout
-	cmd.Stderr = &w.stderr
-
 	cmd.Cancel = func() error {
-		logr.WithFields(logrus.Fields{
-			"hash": w.actionDigest.Hash,
-		}).Warn("Terminating process due to timeout")
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			actionTimeout.Inc()
+			logr.WithFields(logrus.Fields{
+				"hash": w.actionDigest.Hash,
+			}).Warnf("Terminating process due to timeout: %s", timeout)
+		}
+		if cmd.Process == nil {
+			return nil
+		}
 		return cmd.Process.Signal(syscall.SIGTERM)
 	}
 
-	if err := cmd.Start(); err != nil {
-		logr.WithFields(logrus.Fields{
-			"hash":    w.actionDigest.Hash,
-			"path":    cmd.Path,
-			"args":    cmd.Args,
-			"dir":     cmd.Dir,
-			"timeout": timeout.String(),
-		}).WithError(err).Error("Failed to start command")
-
-		return err
-	}
-	err := cmd.Wait()
+	err := cmd.Run()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		if cmd.ProcessState != nil {
-			if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+		if ps := cmd.ProcessState; ps != nil {
+			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
 				if status.Signaled() && status.Signal() == syscall.SIGKILL {
 					logr.WithFields(logrus.Fields{
 						"hash": w.actionDigest.Hash,
-					}).Errorf("Process exceeded %s grace period: Hard Kill (SIGKILL) performed", gracePeriod)
+					}).Warnf("Grace period %s expired; process killed (SIGKILL)", gracePeriod)
 				}
 			}
 		}
