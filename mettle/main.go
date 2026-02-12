@@ -240,8 +240,6 @@ func initLogrusFromVerbosity(v logging.Verbosity, structured bool) {
 		level = logrus.InfoLevel
 	case 4:
 		level = logrus.DebugLevel
-	default:
-		level = logrus.DebugLevel
 	}
 
 	logrus.SetLevel(level)
