@@ -5,6 +5,7 @@ go_binary(
     deps = [
         "///third_party/go/github.com_peterebden_go-cli-init_v4//flags",
         "///third_party/go/github.com_peterebden_go-cli-init_v4//logging",
+        "///third_party/go/github.com_sirupsen_logrus//:logrus",
         "//cli",
         "//grpcutil",
         "//mettle/api",

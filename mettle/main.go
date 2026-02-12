@@ -11,6 +11,7 @@ import (
 
 	"github.com/peterebden/go-cli-init/v4/flags"
 	"github.com/peterebden/go-cli-init/v4/logging"
+	"github.com/sirupsen/logrus"
 
 	"github.com/thought-machine/please-servers/cli"
 	"github.com/thought-machine/please-servers/grpcutil"
@@ -154,6 +155,9 @@ updated blobs dominating much of the data downloaded.
 
 func main() {
 	cmd, info := cli.ParseFlagsOrDie("Mettle", &opts, &opts.Logging)
+
+	initLogrusFromVerbosity(opts.Logging.Verbosity, opts.Logging.Structured)
+
 	if cmd != "one" {
 		go cli.ServeAdmin(fmt.Sprintf("mettle-%s", cmd), opts.Admin, info)
 	}
@@ -219,4 +223,44 @@ func one() error {
 		}
 	}
 	return nil
+}
+
+func initLogrusFromVerbosity(v logging.Verbosity, structured bool) {
+
+	level := logrus.InfoLevel
+
+	switch int(v) {
+	case 0:
+		level = logrus.ErrorLevel
+	case 1:
+		level = logrus.WarnLevel
+	// notice -> closest in logrus
+	case 2:
+		level = logrus.InfoLevel
+	case 3:
+		level = logrus.InfoLevel
+	case 4:
+		level = logrus.DebugLevel
+	default:
+		level = logrus.DebugLevel
+	}
+
+	logrus.SetLevel(level)
+	logrus.SetOutput(os.Stderr)
+
+	if structured {
+		logrus.SetFormatter(&logrus.JSONFormatter{})
+	} else {
+		logrus.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: "15:04:05.000",
+		})
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"verbosity":  int(v),
+		"level":      logrus.GetLevel().String(),
+		"structured": structured,
+		"out":        fmt.Sprintf("%T", logrus.StandardLogger().Out),
+	}).Info("logrus initialised")
 }
