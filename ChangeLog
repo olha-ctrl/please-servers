@@ -1,3 +1,7 @@
+Version 11.16.3
+---------------
+    * Fix logrus verbosity handling for debug level log
+
 Version 11.16.2
 ---------------
     * Refactor runCommand to use exec.CommandContext

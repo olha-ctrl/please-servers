@@ -227,18 +227,17 @@ func one() error {
 
 // initLogrusFromVerbosity creates instance of Logrus and populates verbosity level
 func initLogrusFromVerbosity(v logging.Verbosity, structured bool) {
-	level := logrus.InfoLevel
-	switch int(v) {
-	case 0:
+	var level logrus.Level
+
+	switch {
+	case v <= 0:
 		level = logrus.ErrorLevel
-	case 1:
+	case v == 1:
 		level = logrus.WarnLevel
-	// use info as logrus doesn't have notice level
-	case 2:
+	case v == 2 || v == 3:
+		// logrus doesn't have notice level, so use info
 		level = logrus.InfoLevel
-	case 3:
-		level = logrus.InfoLevel
-	case 4:
+	case v >= 4:
 		level = logrus.DebugLevel
 	}
 
