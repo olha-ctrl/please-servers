@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"math"
 	"os"
@@ -54,7 +53,7 @@ import (
 )
 
 var log = logging.MustGetLogger()
-var logr = logrus.New()
+var logr = logrus.StandardLogger()
 
 var totalBuilds = prometheus.NewCounter(prometheus.CounterOpts{
 	Namespace: "mettle",
@@ -119,7 +118,7 @@ var nackedMessages = prometheus.NewCounter(prometheus.CounterOpts{
 	Name:      "nacked_messages_total",
 })
 
-var actionTimeout  = prometheus.NewCounter(prometheus.CounterOpts{
+var actionTimeout = prometheus.NewCounter(prometheus.CounterOpts{
 	Namespace: "mettle",
 	Name:      "action_timeout",
 })
@@ -619,7 +618,6 @@ func (w *worker) extendAckDeadlineOnce(ctx context.Context, client *psraw.Subscr
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
 		}).WithError(err).Warn("Failed to extend ack deadline")
-
 	}
 }
 
@@ -688,7 +686,6 @@ func (w *worker) prepareDirWithPacks(action *pb.Action, command *pb.Command, use
 			"total":      humanize.Bytes(uint64(total)),
 			"percentage": fmt.Sprintf("%0.1f%%", percentage),
 		}).Debug("Prepared directory")
-
 	} else {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
@@ -733,11 +730,15 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	start := time.Now()
 	w.metadata.ExecutionStartTimestamp = toTimestamp(start)
 	duration, _ := ptypes.Duration(action.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 	logr.WithFields(logrus.Fields{
-		"hash":     w.actionDigest.Hash,
-		"duration": duration,
-	}).Debug("Executing action with timeout")
-	cmd := exec.Command(commandPath(command), command.Arguments[1:]...)
+		"hash":    w.actionDigest.Hash,
+		"stage":   "exec_action",
+		"timeout": duration.String(),
+	}).Debug("Executing action - started")
+
+	cmd := exec.CommandContext(ctx, commandPath(command), command.Arguments[1:]...)
 	// Setting Pdeathsig should ideally make subprocesses get kill signals if we die.
 	cmd.SysProcAttr = sysProcAttr()
 	cmd.Dir = path.Join(w.dir, command.WorkingDirectory)
@@ -755,10 +756,8 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 		}
 		cmd.Env[i] = v.Name + "=" + v.Value
 	}
-	err := w.runCommand(cmd, duration)
-	logr.WithFields(logrus.Fields{
-		"hash": w.actionDigest.Hash,
-	}).Debug("Completed execution")
+
+	err := w.runCommand(ctx, cmd, duration)
 
 	execEnd := time.Now()
 	w.metadata.VirtualExecutionDuration = durationpb.New(duration)
@@ -766,6 +765,13 @@ func (w *worker) execute(req *pb.ExecuteRequest, action *pb.Action, command *pb.
 	w.metadata.OutputUploadStartTimestamp = w.metadata.ExecutionCompletedTimestamp
 	execDuration := execEnd.Sub(start).Seconds()
 	executeDurations.Observe(execDuration)
+
+	logr.WithFields(logrus.Fields{
+		"hash":  w.actionDigest.Hash,
+		"stage": "exec_action",
+		"took":  execDuration,
+		"err":   fmt.Sprintf("%v", err),
+	}).Debug("Executing action - completed")
 
 	ar := &pb.ActionResult{
 		ExitCode:          int32(cmd.ProcessState.ExitCode()),
@@ -913,55 +919,50 @@ func containsAllOutputPaths(cmd *pb.Command, ar *pb.ActionResult) bool {
 	return true
 }
 
-// runCommand runs a command with a timeout, terminating it in a sensible manner.
-// Some care is needed here due to horrible interactions between process termination and
-// having an in-process stdout / stderr.
-func (w *worker) runCommand(cmd *exec.Cmd, timeout time.Duration) error {
+// runCommand runs a command with a timeout, terminating it in a sensible manner
+func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
 	w.stdout.Reset()
 	w.stderr.Reset()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	defer stdout.Close()
-	go func() {
-		io.Copy(&w.stdout, stdout)
-	}()
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	defer stderr.Close()
-	go func() {
-		io.Copy(&w.stderr, stderr)
-	}()
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	ch := make(chan error)
-	go func() {
-		ch <- cmd.Wait()
-	}()
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(timeout):
-		logr.WithFields(logrus.Fields{
-			"hash": w.actionDigest.Hash,
-		}).Warnf("Terminating process due to timeout: %s", timeout)
-		cmd.Process.Signal(os.Signal(syscall.SIGTERM))
-		actionTimeout.Inc()
-		select {
-		case <-ch:
-			return ErrTimeout
-		case <-time.After(5 * time.Second):
-			logr.WithFields(logrus.Fields{
-				"hash": w.actionDigest.Hash,
-			}).Warn("Killing process")
-			cmd.Process.Kill()
-			return ErrTimeout
+
+	cmd.Stdout = &w.stdout
+	cmd.Stderr = &w.stderr
+	gracePeriod := 5 * time.Second
+	cmd.WaitDelay = gracePeriod
+
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
 		}
+		return cmd.Process.Signal(syscall.SIGTERM)
 	}
+
+	err := cmd.Run()
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		actionTimeout.Inc()
+		forceKilled := false
+		if ps := cmd.ProcessState; ps != nil {
+			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
+				if status.Signaled() && status.Signal() == syscall.SIGKILL {
+					forceKilled = true
+				}
+			}
+		}
+
+		msg := "Terminating process due to timeout"
+		if forceKilled {
+			msg += "; grace period expired; process killed (SIGKILL)"
+		}
+		logr.WithFields(logrus.Fields{
+			"hash":        w.actionDigest.Hash,
+			"timeout":     timeout.String(),
+			"gracePeriod": gracePeriod.String(),
+			"forceKilled": forceKilled,
+		}).Warn(msg)
+
+		return ErrTimeout
+	}
+	return err
 }
 
 // writeUncachedResult attempts to write an uncached action result proto.

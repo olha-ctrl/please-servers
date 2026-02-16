@@ -1,3 +1,8 @@
+Version 11.16.2
+---------------
+    * Refactor runCommand to use exec.CommandContext
+    * Add verbosity handling to logrus logger in the worker
+
 Version 11.16.1
 ---------------
     * Add timeout metric + timeout value in action timout logs
