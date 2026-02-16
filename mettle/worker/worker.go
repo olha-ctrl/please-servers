@@ -930,12 +930,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	cmd.WaitDelay = gracePeriod
 
 	cmd.Cancel = func() error {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			actionTimeout.Inc()
-			logr.WithFields(logrus.Fields{
-				"hash": w.actionDigest.Hash,
-			}).Warnf("Terminating process due to timeout: %s", timeout)
-		}
 		if cmd.Process == nil {
 			return nil
 		}
@@ -945,18 +939,29 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	err := cmd.Run()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		actionTimeout.Inc()
+		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
 				if status.Signaled() && status.Signal() == syscall.SIGKILL {
-					logr.WithFields(logrus.Fields{
-						"hash": w.actionDigest.Hash,
-					}).Warnf("Grace period %s expired; process killed (SIGKILL)", gracePeriod)
+					forceKilled = true
 				}
 			}
 		}
+
+		msg := "Terminating process due to timeout"
+		if forceKilled {
+			msg += "; grace period expired; process killed (SIGKILL)"
+		}
+		logr.WithFields(logrus.Fields{
+			"hash":        w.actionDigest.Hash,
+			"timeout":     timeout.String(),
+			"gracePeriod": gracePeriod.String(),
+			"forceKilled": forceKilled,
+		}).Warn(msg)
+
 		return ErrTimeout
 	}
-
 	return err
 }
 
