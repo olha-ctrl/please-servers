@@ -225,8 +225,8 @@ func one() error {
 	return nil
 }
 
+// initLogrusFromVerbosity creates instance of Logrus and populates verbosity level
 func initLogrusFromVerbosity(v logging.Verbosity, structured bool) {
-
 	level := logrus.InfoLevel
 	switch int(v) {
 	case 0:

@@ -618,7 +618,6 @@ func (w *worker) extendAckDeadlineOnce(ctx context.Context, client *psraw.Subscr
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
 		}).WithError(err).Warn("Failed to extend ack deadline")
-
 	}
 }
 
@@ -687,7 +686,6 @@ func (w *worker) prepareDirWithPacks(action *pb.Action, command *pb.Command, use
 			"total":      humanize.Bytes(uint64(total)),
 			"percentage": fmt.Sprintf("%0.1f%%", percentage),
 		}).Debug("Prepared directory")
-
 	} else {
 		logr.WithFields(logrus.Fields{
 			"hash": w.actionDigest.Hash,
