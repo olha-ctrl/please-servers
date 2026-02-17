@@ -959,6 +959,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 				processTree = string(psOut)
 			}
 		}
+		logr.WithField("hangingProcessTree", processTree).Debug("Timeout reached: Analyzing hanging group")
 
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
@@ -974,11 +975,10 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			msg += "; grace period expired; process killed (SIGKILL)"
 		}
 		logr.WithFields(logrus.Fields{
-			"hash":               w.actionDigest.Hash,
-			"timeout":            timeout.String(),
-			"gracePeriod":        gracePeriod.String(),
-			"forceKilled":        forceKilled,
-			"hangingProcessTree": processTree,
+			"hash":        w.actionDigest.Hash,
+			"timeout":     timeout.String(),
+			"gracePeriod": gracePeriod.String(),
+			"forceKilled": forceKilled,
 		}).Warn(msg)
 
 		return ErrTimeout
