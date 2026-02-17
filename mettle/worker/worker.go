@@ -928,22 +928,43 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	cmd.Stderr = &w.stderr
 	gracePeriod := 5 * time.Second
 	cmd.WaitDelay = gracePeriod
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
+		if cmd.Process == nil || cmd.Process.Pid <= 0 {
 			return nil
 		}
-		return cmd.Process.Signal(syscall.SIGTERM)
+
+		// send SIGTERM to the entire group (-PID) created by Setpgid
+		// where parent AND all children holding the pipes
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+
+		// If the group doesn't exist yet or already gone, ignore the error
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
 	}
 
 	err := cmd.Run()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
+
+		// fetch processes that didn't exit on SIGTERM
+		var processTree string
+		if cmd.Process != nil {
+			args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
+			if psOut, psErr := exec.Command("ps", args...).Output(); psErr == nil {
+				processTree = string(psOut)
+			}
+		}
+		logr.WithField("hangingProcessTree", processTree).Debug("Timeout reached: Analyzing hanging group")
+
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
-				if status.Signaled() && status.Signal() == syscall.SIGKILL {
+				if status.Signaled() && (status.Signal() == syscall.SIGTERM || status.Signal() == syscall.SIGKILL) {
 					forceKilled = true
 				}
 			}

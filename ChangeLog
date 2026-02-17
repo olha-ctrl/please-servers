@@ -1,3 +1,7 @@
+Version 11.16.4
+---------------
+    * Kill parent and all child processes via process group on worker timeout. Log hanging processes
+
 Version 11.16.3
 ---------------
     * Fix logrus verbosity handling for debug level log
