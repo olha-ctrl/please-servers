@@ -928,12 +928,21 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	cmd.Stderr = &w.stderr
 	gracePeriod := 5 * time.Second
 	cmd.WaitDelay = gracePeriod
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
+		if cmd.Process == nil || cmd.Process.Pid <= 0 {
 			return nil
 		}
-		return cmd.Process.Signal(syscall.SIGTERM)
+		// send SIGTERM to the entire group (-PID) created by Setpgid
+		// where parent AND all children holding the pipes
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+
+		// If the group doesn't exist yet or already gone, ignore the error
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
 	}
 
 	err := cmd.Run()
@@ -941,6 +950,14 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
 		forceKilled := false
+
+		out := w.stdout.Bytes()
+		start := 0
+		if len(out) > 500 {
+			start = len(out) - 500
+		}
+		lastStdout := string(out[start:])
+
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
 				if status.Signaled() && status.Signal() == syscall.SIGKILL {
@@ -949,7 +966,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			}
 		}
 
-		msg := "Terminating process due to timeout"
+		msg := "Terminating process due to timeout; check 'last_stdout' for hanging point"
 		if forceKilled {
 			msg += "; grace period expired; process killed (SIGKILL)"
 		}
@@ -957,6 +974,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			"hash":        w.actionDigest.Hash,
 			"timeout":     timeout.String(),
 			"gracePeriod": gracePeriod.String(),
+			"lastStdout":  lastStdout,
 			"forceKilled": forceKilled,
 		}).Warn(msg)
 
