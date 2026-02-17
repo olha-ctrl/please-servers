@@ -950,14 +950,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
 		forceKilled := false
-
-		out := w.stdout.Bytes()
-		start := 0
-		if len(out) > 500 {
-			start = len(out) - 500
-		}
-		lastStdout := string(out[start:])
-
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
 				if status.Signaled() && status.Signal() == syscall.SIGKILL {
@@ -966,7 +958,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			}
 		}
 
-		msg := "Terminating process due to timeout; check 'last_stdout' for hanging point"
+		msg := "Terminating process due to timeout"
 		if forceKilled {
 			msg += "; grace period expired; process killed (SIGKILL)"
 		}
@@ -974,7 +966,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			"hash":        w.actionDigest.Hash,
 			"timeout":     timeout.String(),
 			"gracePeriod": gracePeriod.String(),
-			"lastStdout":  lastStdout,
 			"forceKilled": forceKilled,
 		}).Warn(msg)
 
