@@ -935,11 +935,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			return nil
 		}
 
-		// Capture process state, resource usage, and full command hierarchy for the group
-		args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
-		if psOut, err := exec.Command("ps", args...).Output(); err == nil {
-			logr.WithField("process_tree", string(psOut)).Debug("Timeout reached: Analyzing hanging group")
-		}
 		// send SIGTERM to the entire group (-PID) created by Setpgid
 		// where parent AND all children holding the pipes
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
@@ -955,6 +950,16 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
+
+		// fetch processes that didn't exit on SIGTERM
+		var processTree string
+		if cmd.Process != nil {
+			args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
+			if psOut, psErr := exec.Command("ps", args...).Output(); psErr == nil {
+				processTree = string(psOut)
+			}
+		}
+
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
@@ -969,10 +974,11 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			msg += "; grace period expired; process killed (SIGKILL)"
 		}
 		logr.WithFields(logrus.Fields{
-			"hash":        w.actionDigest.Hash,
-			"timeout":     timeout.String(),
-			"gracePeriod": gracePeriod.String(),
-			"forceKilled": forceKilled,
+			"hash":               w.actionDigest.Hash,
+			"timeout":            timeout.String(),
+			"gracePeriod":        gracePeriod.String(),
+			"forceKilled":        forceKilled,
+			"hangingProcessTree": processTree,
 		}).Warn(msg)
 
 		return ErrTimeout
