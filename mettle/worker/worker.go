@@ -934,6 +934,12 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		if cmd.Process == nil || cmd.Process.Pid <= 0 {
 			return nil
 		}
+
+		// Capture process state, resource usage, and full command hierarchy for the group
+		args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
+		if psOut, err := exec.Command("ps", args...).Output(); err == nil {
+			logr.WithField("process_tree", string(psOut)).Debug("Timeout reached: Analyzing hanging group")
+		}
 		// send SIGTERM to the entire group (-PID) created by Setpgid
 		// where parent AND all children holding the pipes
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
@@ -952,7 +958,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
-				if status.Signaled() && status.Signal() == syscall.SIGKILL {
+				if status.Signaled() && (status.Signal() == syscall.SIGTERM || status.Signal() == syscall.SIGKILL) {
 					forceKilled = true
 				}
 			}
