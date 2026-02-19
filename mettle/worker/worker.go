@@ -952,14 +952,8 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		}
 
 		// send SIGTERM to the entire group (-PID) created by Setpgid
-<<<<<<< HEAD
-<<<<<<< HEAD
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-=======
-=======
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
+		// where parent AND all children holding the pipes
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
 		// If the group doesn't exist yet or already gone, ignore the error
 		if errors.Is(err, syscall.ESRCH) {
@@ -968,76 +962,21 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return err
 	}
 
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
+	err := cmd.Run()
 
-	pid := cmd.Process.Pid
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		actionTimeout.Inc()
 
-	// make a snapshot of processes if context.DeadlineExceeded
-	go func(pid int) {
-		<-ctx.Done()
-		// early exit if no timeout
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return
-		}
-<<<<<<< HEAD
-		// # TODO(INFRA-130229): Revert this temporary change mettle timeouts investigations are completed
-		w.logProcOnTimeout(pid)
-	}(pid)
-
-	err := cmd.Wait()
-=======
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
-
-	pid := cmd.Process.Pid
-
-<<<<<<< HEAD
-=======
-	// make a snapshot of processes if context.DeadlineExceeded
-	go func(pid int) {
-		<-ctx.Done()
-		// early exit if no timeout
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return
-		}
-=======
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
-
-		pgid, _ := syscall.Getpgid(pid)
+		// fetch processes that didn't exit on SIGTERM
 		var processTree string
-		if pgid > 0 {
-			args := []string{"-g", fmt.Sprintf("%d", pgid), "-o", "pid,ppid,pgid,state,etime,wchan,%cpu,%mem,command"}
+		if cmd.Process != nil {
+			args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
 			if psOut, psErr := exec.Command("ps", args...).Output(); psErr == nil {
 				processTree = string(psOut)
 			}
 		}
-		logr.WithFields(logrus.Fields{
-			"hash":               w.actionDigest.Hash,
-			"pid":                pid,
-			"pgid":               pgid,
-			"hangingProcessTree": processTree,
-		}).Debug("Deadline exceeded: Analyzing hanging group")
-	}(pid)
-<<<<<<< HEAD
-=======
+		logr.WithField("hangingProcessTree", processTree).Debug("Timeout reached: Analyzing hanging group")
 
-	err := cmd.Wait()
-
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		actionTimeout.Inc()
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
-
-	err := cmd.Wait()
-
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		actionTimeout.Inc()
-
->>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
