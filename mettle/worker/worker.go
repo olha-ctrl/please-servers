@@ -1020,10 +1020,8 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			}
 			return s
 		}
-
 		stdoutStr := w.stdout.String()
 		stderrStr := w.stderr.String()
-
 		logr.WithFields(logrus.Fields{
 			"hash":         w.actionDigest.Hash,
 			"stdout_bytes": len(stdoutStr),
