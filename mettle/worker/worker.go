@@ -952,7 +952,11 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		}
 
 		// send SIGTERM to the entire group (-PID) created by Setpgid
+<<<<<<< HEAD
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+=======
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
 		// If the group doesn't exist yet or already gone, ignore the error
 		if errors.Is(err, syscall.ESRCH) {
@@ -964,6 +968,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+<<<<<<< HEAD
 
 	pid := cmd.Process.Pid
 
@@ -979,10 +984,43 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 	}(pid)
 
 	err := cmd.Wait()
+=======
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
+
+	pid := cmd.Process.Pid
+
+<<<<<<< HEAD
+=======
+	// make a snapshot of processes if context.DeadlineExceeded
+	go func(pid int) {
+		<-ctx.Done()
+		// early exit if no timeout
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return
+		}
+
+		pgid, _ := syscall.Getpgid(pid)
+		var processTree string
+		if pgid > 0 {
+			args := []string{"-g", fmt.Sprintf("%d", pgid), "-o", "pid,ppid,pgid,state,etime,wchan,%cpu,%mem,command"}
+			if psOut, psErr := exec.Command("ps", args...).Output(); psErr == nil {
+				processTree = string(psOut)
+			}
+		}
+		logr.WithFields(logrus.Fields{
+			"hash":               w.actionDigest.Hash,
+			"pid":                pid,
+			"pgid":               pgid,
+			"hangingProcessTree": processTree,
+		}).Debug("Deadline exceeded: Analyzing hanging group")
+	}(pid)
+
+	err := cmd.Wait()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
 
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
 			if status, ok := ps.Sys().(syscall.WaitStatus); ok {
