@@ -968,14 +968,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		actionTimeout.Inc()
 
 		// fetch processes that didn't exit on SIGTERM
-		var processTree string
-		if cmd.Process != nil {
-			args := []string{"-g", fmt.Sprintf("%d", cmd.Process.Pid), "-o", "pid,ppid,state,%cpu,%mem,start,time,command"}
-			if psOut, psErr := exec.Command("ps", args...).Output(); psErr == nil {
-				processTree = string(psOut)
-			}
-		}
-		logr.WithField("hangingProcessTree", processTree).Debug("Timeout reached: Analyzing hanging group")
+		logProcOnTimeout
 
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
