@@ -953,8 +953,11 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 
 		// send SIGTERM to the entire group (-PID) created by Setpgid
 <<<<<<< HEAD
+<<<<<<< HEAD
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 =======
+=======
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 >>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
@@ -969,6 +972,9 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return err
 	}
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
 	pid := cmd.Process.Pid
 
@@ -979,6 +985,7 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return
 		}
+<<<<<<< HEAD
 		// # TODO(INFRA-130229): Revert this temporary change mettle timeouts investigations are completed
 		w.logProcOnTimeout(pid)
 	}(pid)
@@ -998,6 +1005,8 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return
 		}
+=======
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
 		pgid, _ := syscall.Getpgid(pid)
 		var processTree string
@@ -1014,6 +1023,14 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 			"hangingProcessTree": processTree,
 		}).Debug("Deadline exceeded: Analyzing hanging group")
 	}(pid)
+<<<<<<< HEAD
+=======
+
+	err := cmd.Wait()
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		actionTimeout.Inc()
+>>>>>>> c32cb2e (Improve runCommand timeout diagnostics (process snapshot + output summary) (#338))
 
 	err := cmd.Wait()
 
