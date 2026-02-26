@@ -952,7 +952,6 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		}
 
 		// send SIGTERM to the entire group (-PID) created by Setpgid
-		// where parent AND all children holding the pipes
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 
 		// If the group doesn't exist yet or already gone, ignore the error
@@ -962,13 +961,27 @@ func (w *worker) runCommand(ctx context.Context, cmd *exec.Cmd, timeout time.Dur
 		return err
 	}
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	pid := cmd.Process.Pid
+
+	// make a snapshot of processes if context.DeadlineExceeded
+	go func(pid int) {
+		<-ctx.Done()
+		// early exit if no timeout
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return
+		}
+		// # TODO(INFRA-130229): Revert this temporary change mettle timeouts investigations are completed
+		w.logProcOnTimeout(pid)
+	}(pid)
+
+	err := cmd.Wait()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		actionTimeout.Inc()
-
-		// fetch processes that didn't exit on SIGTERM
-		logProcOnTimeout
 
 		forceKilled := false
 		if ps := cmd.ProcessState; ps != nil {
